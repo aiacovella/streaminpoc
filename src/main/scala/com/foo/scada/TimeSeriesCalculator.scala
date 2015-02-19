@@ -47,13 +47,13 @@ trait TimeSeriesCalculator {
    * prior to averaging.
    *
    * Note: Since this calculator will be hit many times, especially for the back-filling service,
-   * the  time series data will be expected to be sorted and by epoc prior to being passed into this method.
+   * the time series data will be expected to be sorted by epoc prior to being passed into this method.
    *
    *
    * @param minutes Number of minutes to average
    * @param timeSeries Series of time and value data
    */
-  def calculate(minutes: Int, timeSeries: SortedSet[TimeSeriesEntry]): BigDecimal = {
+  def calculate(minutes: Int, timeSeries: Seq[TimeSeriesEntry]): BigDecimal = {
     assert(minutes > 0, "Minutes for averaging must be greater than or equal to 1")
 
     val filteredSeries = timeSeries.filter(_.quality != Bad)

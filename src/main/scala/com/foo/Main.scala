@@ -2,11 +2,11 @@ package com.foo
 
 import akka.actor.{Props, ActorSystem}
 import akka.stream.FlowMaterializer
-import akka.stream.scaladsl.{Sink, Source}
+import akka.stream.scaladsl._
 import akka.stream.stage.{TerminationDirective, Directive, Context, PushStage}
 import com.foo.scada._
 import com.typesafe.scalalogging.StrictLogging
-import org.joda.time.{Days, DateTimeZone, DateTime}
+import org.joda.time.{Seconds, Days, DateTimeZone, DateTime}
 
 import scala.concurrent.Future
 
@@ -23,52 +23,71 @@ object Main extends App with StrictLogging {
 
   implicit val materializer = FlowMaterializer()
 
-  //val jobManager = system.actorOf(Props[StreamPublisher], "jobmanager")
-  //  val jobManagerSource = Source[Payload](StreamPublisher.props)
 
   val startTime = new DateTime()
 
-  val startDate = new DateTime(2014, 10, 10, 0, 0, 0, DateTimeZone.forID("US/Eastern"))
+  val startDate = new DateTime(2014, 12, 1, 0, 0, 0, DateTimeZone.forID("US/Eastern"))
 
-  val sourceData = Source(splitIntoDays(Job(s"ENDPOINT-2", startDate, null)))
+  val sourceDataEnpoint1 = Source(splitIntoDays(Job(s"ENDPOINT-1", startDate, null)))
+  val sourceDataEnpoint2 = Source(splitIntoDays(Job(s"ENDPOINT-2", startDate, null)))
+
+  val allSources = Source(splitIntoDays(Job(s"ENDPOINT-1", startDate, null)) ++ splitIntoDays(Job(s"ENDPOINT-2", startDate, null)))
 
   import scala.concurrent.ExecutionContext.Implicits.global
 
-  println("START: " + new DateTime())
+  val materializedMap1 = sourceDataEnpoint1
+    .mapAsync{endPointDay =>
+    Future {
+      hisoricalData(endPointDay)
+    }
+  }.mapConcat(identity)             // convert stream element into a sequence of elements then flatten
+    .transform(() =>  new AveragingStage())
 
-  val materializedMap = sourceData
+  val materializedMap2 = sourceDataEnpoint2
     .mapAsync{endPointDay =>
       Future {
         hisoricalData(endPointDay)
       }
     }.mapConcat(identity)             // convert stream element into a sequence of elements then flatten
     .transform(() =>  new AveragingStage())
-    .foreach{trendData =>
-      //val fiveMinuteAverage = trendData.data.find(dt => dt.durationType == RollingAverage && dt.duration == Minutes(60))
-      // println(s"Endpoint: ${trendData.pointId} Time: ${new DateTime(trendData.timestamp)} Power:${trendData.power.toKilowatts}} 5 Min Avg: ${fiveMinuteAverage}")
-      // println(s"product: ${new DateTime(p.timestamp, DateTimeZone.UTC)} power: ${p.power}")
+
+  val materializedMaps = Set(materializedMap1, materializedMap2)
+
+  var endPointOneCount = 0
+  var endPointTwoCount = 0
+
+  val sink = ForeachSink[TrendData]{ v ⇒
+    if (v.pointId == "ENDPOINT-2"){
+      endPointTwoCount += 1
     }
-    .onComplete { f =>
-      println("DONE and DONE")
+    else {
+      endPointOneCount += 1
+    }
+  }
 
-     println(s">>>>>>>>>>>>> Job took ${(new DateTime().getMillis - startTime.getMillis) / 1000} seconds to run")
+  val materialized = FlowGraph { implicit builder =>
+    import FlowGraphImplicits._
+    val merge = Merge[TrendData]("MergedStreams")
 
-      system.shutdown()
+    val merges = materializedMaps.map{ mm ⇒
+      mm ~> merge
+    }
+
+    merges.last ~> sink
+  }.run
+
+  materialized.get(sink).onComplete{ s ⇒
+    val seconds = Seconds.secondsBetween(startTime, new DateTime()).getSeconds
+    println(s"Completed in $seconds seconds")
+
+    println()
+    system.shutdown()
   }
 
 
 
-  println("End: " + new DateTime())
-
-//    .map{v =>
-//        splitIntoDays(v)
-//    }.mapConcat(identity)
-//    .foreach{p =>
-//        println(s"\nproduct: $p")
-//    }
-
-//    .transform(() => new LoggingStage[Result])
-//    .to(Sink(StreamSubscriber.props)).run
+  //Thread.sleep(60000)
+//  system.shutdown()
 
 
 
@@ -90,9 +109,6 @@ object Main extends App with StrictLogging {
   def hisoricalData(endPointDay: EndpointDay) = {
     // simulate historical data and response lag of 1 second
 
-    println(s">>>>>>>>>>>>>>>>>> Retrieve start ${endPointDay.startTime}")
-    //Thread.sleep(1000)
-
     val ret = (0 to 1440) map {minute =>
 
       val durations = Set(
@@ -104,8 +120,6 @@ object Main extends App with StrictLogging {
       val min = endPointDay.startTime.plusMinutes(minute)
       TrendData(endPointDay.endPoint, min.getMillis, Good, durations, Kilowatts(minute), KilowattHours(minute *2))
     }
-    println(s"***************** Retrieve end ${endPointDay.startTime}")
-
     ret
   }
 
@@ -116,24 +130,15 @@ class AveragingStage extends PushStage[TrendData, TrendData] with TimeSeriesCalc
 
   val queue:FiniteQueue[TimeSeriesEntry] = new FiniteQueue[TimeSeriesEntry](60)
 
-//  val array: Array[TimeSeriesEntry] = Array()
-
   override def onPush(trendData: TrendData, ctx: Context[TrendData]): Directive = {
-//    println(s"Averaging Element : ${trendData}")
-
     queue.enqueue(TimeSeriesEntry(trendData.timestamp, trendData.power.toKilowatts, trendData.quality))
 
-//    implicit def orderingByEpocTime[A <: TimeSeriesEntry]: Ordering[A] = Ordering.by(e ⇒ e.epoc)
-
-
-    val timeSeries = collection.SortedSet(queue.toSeq: _*)
-
     val rollingAverages = Set(
-      DurationEntry(Minutes(5), calculate(5, timeSeries), RollingAverage),
-      DurationEntry(Minutes(15), calculate(15, timeSeries), RollingAverage),
-      DurationEntry(Minutes(30), calculate(30, timeSeries), RollingAverage),
-      DurationEntry(Minutes(60), calculate(60, timeSeries), RollingAverage))
-    ctx.push(trendData.copy(data = trendData.data ++ rollingAverages))
+      DurationEntry(Minutes(5), calculate(5, queue), RollingAverage),
+      DurationEntry(Minutes(15), calculate(15, queue), RollingAverage),
+      DurationEntry(Minutes(30), calculate(30, queue), RollingAverage),
+      DurationEntry(Minutes(60), calculate(60, queue), RollingAverage))
+      ctx.push(trendData.copy(data = trendData.data ++ rollingAverages))
 
   }
 
@@ -148,17 +153,3 @@ class AveragingStage extends PushStage[TrendData, TrendData] with TimeSeriesCalc
   }
 }
 
-
-/**
- * Implementation of a Queue with restricted size.
- * @param limit Size limit of the queue. If more elements are pushed into the queue, the oldest will be removed first if size will be exceeded
- * @tparam T Type parameter for elements to be stored in queue
- */
-class FiniteQueue[T](limit: Int) extends scala.collection.mutable.Queue[T] {
-  override def enqueue(elems: T*) {
-    elems.foreach { elem ⇒
-      if (size >= limit) super.dequeue()
-      this += elem
-    }
-  }
-}
