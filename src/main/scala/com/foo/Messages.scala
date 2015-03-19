@@ -11,6 +11,6 @@ case class Retry(stockTicker: String, replyTo:ActorRef)
 
 case class StockResult(stockTicker: String, price: BigDecimal, replyTo:ActorRef)
 
-case class Job(endPoint: PointId, startDate: DateTime, replyTo:ActorRef)
+case class Job(endPoint: PointId, startDate: DateTime, endDate: DateTime)
 
 case class EndpointDay(endPoint: PointId, startTime: DateTime, endTime: DateTime)

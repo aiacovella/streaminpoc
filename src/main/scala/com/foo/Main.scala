@@ -1,6 +1,6 @@
 package com.foo
 
-import akka.actor.{Props, ActorSystem}
+import akka.actor.ActorSystem
 import akka.stream.FlowMaterializer
 import akka.stream.scaladsl._
 import akka.stream.stage.{TerminationDirective, Directive, Context, PushStage}
@@ -10,7 +10,7 @@ import org.joda.time.{Seconds, Days, DateTimeZone, DateTime}
 
 import scala.concurrent.Future
 
-import squants.time.{Minutes, Time}
+import squants.time.Minutes
 import squants.energy.{KilowattHours, Kilowatts}
 
 
@@ -27,15 +27,14 @@ object Main extends App with StrictLogging {
   val startTime = new DateTime()
 
   val startDate = new DateTime(2014, 12, 1, 0, 0, 0, DateTimeZone.forID("US/Eastern"))
+  val endDate = new DateTime(2015, 1, 1, 0, 0, 0, DateTimeZone.forID("US/Eastern"))
 
-  val sourceDataEnpoint1 = Source(splitIntoDays(Job(s"ENDPOINT-1", startDate, null)))
-  val sourceDataEnpoint2 = Source(splitIntoDays(Job(s"ENDPOINT-2", startDate, null)))
-
-  val allSources = Source(splitIntoDays(Job(s"ENDPOINT-1", startDate, null)) ++ splitIntoDays(Job(s"ENDPOINT-2", startDate, null)))
+  val sourceDataEndpoint1 = Source(splitIntoDays(Job(s"ENDPOINT-1", startDate, endDate)))
+  val sourceDataEndpoint2 = Source(splitIntoDays(Job(s"ENDPOINT-2", startDate, endDate)))
 
   import scala.concurrent.ExecutionContext.Implicits.global
 
-  val materializedMap1 = sourceDataEnpoint1
+  val materializedMap1 = sourceDataEndpoint1
     .mapAsync{endPointDay =>
     Future {
       hisoricalData(endPointDay)
@@ -43,7 +42,7 @@ object Main extends App with StrictLogging {
   }.mapConcat(identity)             // convert stream element into a sequence of elements then flatten
     .transform(() =>  new AveragingStage())
 
-  val materializedMap2 = sourceDataEnpoint2
+  val materializedMap2 = sourceDataEndpoint2
     .mapAsync{endPointDay =>
       Future {
         hisoricalData(endPointDay)
@@ -53,16 +52,8 @@ object Main extends App with StrictLogging {
 
   val materializedMaps = Set(materializedMap1, materializedMap2)
 
-  var endPointOneCount = 0
-  var endPointTwoCount = 0
-
-  val sink = ForeachSink[TrendData]{ v ⇒
-    if (v.pointId == "ENDPOINT-2"){
-      endPointTwoCount += 1
-    }
-    else {
-      endPointOneCount += 1
-    }
+  val sink = ForeachSink[TrendData]{ td ⇒
+    //println(s"$td")
   }
 
   val materialized = FlowGraph { implicit builder =>
@@ -84,19 +75,13 @@ object Main extends App with StrictLogging {
     system.shutdown()
   }
 
-
-
-  //Thread.sleep(60000)
-//  system.shutdown()
-
-
-
-//  system.shutdown()
-
+  // Splits the job into reqeusts by days
   def splitIntoDays(job: Job) = {
     val beginOfDayForStartTime = job.startDate.withMillisOfDay(0)
-    val endOfDayToday = new DateTime(job.startDate.getZone).withTime(23, 59, 59, 999)
+    val endOfDayToday = job.endDate.withTime(23, 59, 59, 999)
     val daysBetween = Days.daysBetween(beginOfDayForStartTime, endOfDayToday).getDays()
+
+println(">>>> Days Between " + daysBetween)
 
     (0 to daysBetween ).map{day =>
       val beginDay = beginOfDayForStartTime.plusDays(day)
@@ -106,8 +91,8 @@ object Main extends App with StrictLogging {
 
   }
 
+  // simulates historical data and response
   def hisoricalData(endPointDay: EndpointDay) = {
-    // simulate historical data and response lag of 1 second
 
     val ret = (0 to 1440) map {minute =>
 
