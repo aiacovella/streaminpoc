@@ -30,8 +30,8 @@ case class TrendData(
   timestamp: Timestamp,
   quality: ReadingQuality,
   data: Set[DurationEntry],
-  power: Power,
-  energy: Energy,
+  usageRate: BigDecimal,
+  usage: BigDecimal,
   id: org.bson.types.ObjectId = new org.bson.types.ObjectId)
 
 
